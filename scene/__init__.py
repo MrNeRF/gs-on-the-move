@@ -12,11 +12,14 @@
 import os
 import random
 import json
+import sys
+import torch
 from utils.system_utils import searchForMaxIteration
 from scene.dataset_readers import sceneLoadTypeCallbacks
 from scene.gaussian_model import GaussianModel
 from arguments import ModelParams
 from utils.camera_utils import cameraList_from_camInfos, camera_to_JSON
+from pathlib import Path
 
 class Scene:
 
@@ -62,6 +65,36 @@ class Scene:
             with open(os.path.join(self.model_path, "cameras.json"), 'w') as file:
                 json.dump(json_cams, file)
 
+            
+        transforms_json = Path(args.source_path) / "transforms.json"
+        if not transforms_json.exists():
+            sys.exit("transforms.json file not found in the source path")
+
+        with open(transforms_json, "r") as file:
+            data = json.load(file)
+        frames = data["frames"]
+        # Initialize an empty dictionary to hold the data
+        extracted_data = {}
+
+        for frame in frames:
+            # Extract the basename of the file path
+            file_path = os.path.basename(frame["file_path"])
+
+            # Extract camera velocities
+            camera_angular_velocity = frame["camera_angular_velocity"]
+            camera_linear_velocity = frame["camera_linear_velocity"]
+            trafo = frame["transform_matrix"]
+            trafo = torch.tensor(trafo, dtype=torch.float32)
+
+            # Save the extracted information in the dictionary using the basename as the key
+            extracted_data[file_path] = {
+                "camera_angular_velocity": camera_angular_velocity,
+                "camera_linear_velocity": camera_linear_velocity,
+                "trafo": trafo,
+            }
+
+
+
         if shuffle:
             random.shuffle(scene_info.train_cameras)  # Multi-res consistent random shuffling
             random.shuffle(scene_info.test_cameras)  # Multi-res consistent random shuffling
@@ -81,6 +114,19 @@ class Scene:
                                                            "point_cloud.ply"))
         else:
             self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent)
+
+        for idx, cam in enumerate(self.train_cameras[resolution_scale]):
+            if f"{cam.image_name}.png" in extracted_data:
+                cam.angular_velocity = torch.tensor(
+                    extracted_data[f"{cam.image_name}.png"]["camera_angular_velocity"], dtype=torch.float32
+                )
+                cam.linear_velocity = torch.tensor(
+                    extracted_data[f"{cam.image_name}.png"]["camera_linear_velocity"], dtype=torch.float32
+                )
+                self.train_cameras[resolution_scale][idx] = cam
+            else:
+                assert False, f"Could not find camera data for {cam.image_name}.png"
+
 
     def save(self, iteration):
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
